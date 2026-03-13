@@ -2,9 +2,16 @@ name: build & packaging
 
 on: [push, pull_request] 
 
+env:
+  REGISTRY: ghcr.io
+  IMAGE_NAMESPACE: ${{ github.repository_owner }}
+
 jobs:
   build:
     runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: write
 
     steps:
 
@@ -48,20 +55,23 @@ jobs:
     - name: Setup Docker Buildx
       uses: docker/setup-buildx-action@v3
     
-    - name: Docker login
+    - name: Log in to GitHub Container Registry
+      if: github.event_name != 'pull_request'
       uses: docker/login-action@v3
       with:
-        username: ${{ secrets.DOCKERHUB_USERNAME }}
-        password: ${{ secrets.DOCKERHUB_PASSWORD }}
+        registry: ${{ env.REGISTRY }}
+        username: ${{ github.actor }}
+        password: ${{ secrets.GITHUB_TOKEN }}
 
     - name: Docker metainformation for iam-login-service
       id: ls-meta
       # tag v5
       uses: docker/metadata-action@c299e40c65443455700f0fdfc63efafe5b349051
       with:
-        images: limonkufu/iam-login-service
+        images: ${{ env.REGISTRY }}/${{ env.IMAGE_NAMESPACE }}/iam-login-service
         tags: |
           type=sha
+          type=ref,event=branch
           type=ref,event=tag
 
     - name: Docker metainformation for iam-test-client
@@ -69,9 +79,10 @@ jobs:
       # tag v5
       uses: docker/metadata-action@c299e40c65443455700f0fdfc63efafe5b349051
       with:
-        images: limonkufu/iam-test-client
+        images: ${{ env.REGISTRY }}/${{ env.IMAGE_NAMESPACE }}/iam-test-client
         tags: |
           type=sha
+          type=ref,event=branch
           type=ref,event=tag
 
     - name: Docker metainformation for iam-voms-aa
@@ -79,9 +90,10 @@ jobs:
       # tag v5
       uses: docker/metadata-action@c299e40c65443455700f0fdfc63efafe5b349051
       with:
-        images: limonkufu/iam-voms-aa
+        images: ${{ env.REGISTRY }}/${{ env.IMAGE_NAMESPACE }}/iam-voms-aa
         tags: |
           type=sha
+          type=ref,event=branch
           type=ref,event=tag
 
     - name: Build & push iam-login-service docker image
@@ -93,7 +105,7 @@ jobs:
         context: iam-login-service/docker/
         file: iam-login-service/docker/Dockerfile.prod
         platforms: linux/amd64,linux/arm64
-        push: true
+        push: ${{ github.event_name != 'pull_request' }}
 
     - name: Build & push iam-test-client docker image
       # tag v6
@@ -104,7 +116,7 @@ jobs:
         context: iam-test-client/docker/
         file: iam-test-client/docker/Dockerfile.prod
         platforms: linux/amd64,linux/arm64
-        push: true
+        push: ${{ github.event_name != 'pull_request' }}
 
     - name: Build & push iam-voms-aa docker image
       # tag v6
@@ -115,4 +127,4 @@ jobs:
         context: iam-voms-aa/docker/
         file: iam-voms-aa/docker/Dockerfile.prod
         platforms: linux/amd64,linux/arm64
-        push: true
+        push: ${{ github.event_name != 'pull_request' }}
