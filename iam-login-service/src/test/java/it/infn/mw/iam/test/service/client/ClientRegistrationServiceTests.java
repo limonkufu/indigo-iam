@@ -37,7 +37,6 @@ import static org.mockito.Mockito.doReturn;
 import static org.mockito.Mockito.lenient;
 
 import java.text.ParseException;
-import java.time.Clock;
 import java.time.Duration;
 import java.util.HashSet;
 import java.util.Optional;
@@ -54,6 +53,7 @@ import org.mitre.oauth2.service.SystemScopeService;
 import org.mitre.openid.connect.service.BlacklistedSiteService;
 import org.mockito.Mockito;
 import org.springframework.beans.factory.annotation.Autowired;
+import org.springframework.boot.test.autoconfigure.web.servlet.AutoConfigureMockMvc;
 import org.springframework.boot.test.context.SpringBootTest;
 import org.springframework.boot.test.context.SpringBootTest.WebEnvironment;
 import org.springframework.boot.test.mock.mockito.MockBean;
@@ -66,8 +66,7 @@ import org.springframework.security.oauth2.provider.OAuth2Authentication;
 import org.springframework.security.oauth2.provider.OAuth2Request;
 import org.springframework.security.oauth2.provider.authentication.OAuth2AuthenticationDetails;
 import org.springframework.test.context.ActiveProfiles;
-
-import com.mercateo.test.clock.TestClock;
+import org.springframework.transaction.annotation.Transactional;
 
 import it.infn.mw.iam.IamLoginService;
 import it.infn.mw.iam.api.account.AccountUtils;
@@ -82,64 +81,69 @@ import it.infn.mw.iam.config.client_registration.ClientRegistrationProperties;
 import it.infn.mw.iam.config.client_registration.ClientRegistrationProperties.ClientDefaultsProperties;
 import it.infn.mw.iam.config.client_registration.ClientRegistrationProperties.ClientRegistrationAuthorizationPolicy;
 import it.infn.mw.iam.core.oauth.granters.TokenExchangeTokenGranter;
+import it.infn.mw.iam.core.oauth.scope.IamSystemScopeService;
 import it.infn.mw.iam.persistence.model.IamAccount;
 import it.infn.mw.iam.persistence.repository.IamAccountRepository;
 import it.infn.mw.iam.persistence.repository.client.IamClientRepository;
-import it.infn.mw.iam.test.util.annotation.IamNoMvcTest;
+import it.infn.mw.iam.test.config.ClockConfig;
+import it.infn.mw.iam.test.core.CoreControllerTestSupport;
+import it.infn.mw.iam.test.util.TokenGetterUtils;
+import it.infn.mw.iam.test.util.clock.MutableClock;
 
 @SuppressWarnings("deprecation")
-@IamNoMvcTest
-@SpringBootTest(classes = {IamLoginService.class, ClientTestConfig.class},
-    webEnvironment = WebEnvironment.NONE)
-@ActiveProfiles({"h2", "wlcg-scopes"})
-class ClientRegistrationServiceTests {
+@SpringBootTest(
+    classes = {IamLoginService.class, CoreControllerTestSupport.class, ClockConfig.class},
+    webEnvironment = WebEnvironment.MOCK)
+@AutoConfigureMockMvc
+@Transactional
+@ActiveProfiles({"h2-test", "wlcg-scopes"})
+class ClientRegistrationServiceTests extends TokenGetterUtils {
 
   @Autowired
-  private IamClientRepository clientRepo;
+  IamClientRepository clientRepo;
 
   @Autowired
-  private ClientRegistrationService service;
+  ClientRegistrationService service;
 
   @Autowired
-  private IamAccountRepository accountRepo;
+  IamAccountRepository accountRepo;
 
   @Autowired
-  private SystemScopeService scopeService;
+  SystemScopeService scopeService;
 
   @Autowired
-  private ClientRegistrationProperties registrationProperties;
+  ClientRegistrationProperties registrationProperties;
 
   @Autowired
-  private Clock clock;
+  MutableClock clock;
 
   @MockBean
-  private BlacklistedSiteService blsService;
+  BlacklistedSiteService blsService;
 
   @SpyBean
-  private AccountUtils accountUtils;
+  AccountUtils accountUtils;
 
-  private Authentication noAuth;
+  Authentication noAuth;
 
-  private Authentication userAuth;
+  Authentication userAuth;
 
-  private Authentication anotherUserAuth;
+  Authentication anotherUserAuth;
 
-  private Authentication adminAuth;
+  Authentication adminAuth;
 
-  private OAuth2Authentication ratAuth;
+  OAuth2Authentication ratAuth;
 
-  private OAuth2Request oauthRequest;
+  OAuth2Request oauthRequest;
 
-  private OAuth2AuthenticationDetails oauthDetails;
+  OAuth2AuthenticationDetails oauthDetails;
 
-  private IamAccount testAccount;
-  private IamAccount test100Account;
+  IamAccount testAccount;
+  IamAccount test100Account;
 
-  private IamAccount adminAccount;
+  IamAccount adminAccount;
 
   @BeforeEach
   void beforeEach() {
-
     userAuth = Mockito.mock(UsernamePasswordAuthenticationToken.class);
     lenient().when(userAuth.getName()).thenReturn("test");
     lenient().when(userAuth.getAuthorities()).thenAnswer(x -> Set.of(Authorities.ROLE_USER));
@@ -172,12 +176,18 @@ class ClientRegistrationServiceTests {
     lenient().when(ratAuth.getDetails()).thenReturn(oauthDetails);
 
     registrationProperties.setAllowFor(ClientRegistrationAuthorizationPolicy.ANYONE);
+  }
 
+  private RegisteredClientDTO createClientDTO(String uri) {
+    RegisteredClientDTO request = new RegisteredClientDTO();
+    request.setClientName("example");
+    request.setGrantTypes(Set.of(AuthorizationGrantType.CODE));
+    request.setRedirectUris(Set.of(uri));
+    return request;
   }
 
   @Test
   void testRegistrationRequestRequiresClientName() {
-
     ConstraintViolationException exception =
         Assertions.assertThrows(ConstraintViolationException.class, () -> {
           RegisteredClientDTO request = new RegisteredClientDTO();
@@ -187,12 +197,10 @@ class ClientRegistrationServiceTests {
         });
 
     assertThat(exception.getMessage(), containsString("should not be blank"));
-
   }
 
   @Test
   void testNoRedirectUriWithAuthzCodeValidation() {
-
     ConstraintViolationException exception =
         Assertions.assertThrows(ConstraintViolationException.class, () -> {
           RegisteredClientDTO request = new RegisteredClientDTO();
@@ -204,7 +212,6 @@ class ClientRegistrationServiceTests {
 
     assertThat(exception.getMessage(),
         containsString("Authorization code requires a valid redirect uri"));
-
   }
 
   @Test
@@ -223,51 +230,107 @@ class ClientRegistrationServiceTests {
   }
 
   @Test
-  void testRedirectUrisValidation() {
-
+  void testInvalidRedirectUriScheme() {
     ConstraintViolationException exception =
         Assertions.assertThrows(ConstraintViolationException.class, () -> {
-          RegisteredClientDTO request = new RegisteredClientDTO();
-          request.setClientName("example");
-          request.setGrantTypes(Set.of(AuthorizationGrantType.CODE));
-          request.setRedirectUris(Set.of("not-a-uri"));
+          RegisteredClientDTO request = createClientDTO("not-a-uri");
+
+          service.registerClient(request, userAuth);
+        });
+
+    assertThat(exception.getMessage(), containsString("Invalid redirect URI scheme: null"));
+
+    exception = Assertions.assertThrows(ConstraintViolationException.class, () -> {
+      RegisteredClientDTO request = createClientDTO("myapp://redirect");
+
+      service.registerClient(request, userAuth);
+    });
+
+    assertThat(exception.getMessage(), containsString("Invalid redirect URI scheme: myapp"));
+
+    exception = Assertions.assertThrows(ConstraintViolationException.class, () -> {
+      RegisteredClientDTO request = createClientDTO("javascript:alert(1)");
+
+      service.registerClient(request, userAuth);
+    });
+
+    assertThat(exception.getMessage(), containsString("Invalid redirect URI scheme: javascript"));
+  }
+
+  @Test
+  void testMalformedRedirectUri() {
+    ConstraintViolationException exception =
+        Assertions.assertThrows(ConstraintViolationException.class, () -> {
+          RegisteredClientDTO request = createClientDTO(" ");
 
           service.registerClient(request, userAuth);
         });
 
     assertThat(exception.getMessage(), containsString("Invalid redirect URI"));
+  }
 
-    exception = Assertions.assertThrows(ConstraintViolationException.class, () -> {
-      RegisteredClientDTO request = new RegisteredClientDTO();
-      request.setClientName("example");
-      request.setGrantTypes(Set.of(AuthorizationGrantType.CODE));
-      request.setRedirectUris(Set.of(" "));
+  @Test
+  void testNonLoopbackHttpRedirectUri() {
+    ConstraintViolationException exception =
+        Assertions.assertThrows(ConstraintViolationException.class, () -> {
+          RegisteredClientDTO request = createClientDTO("http://example/redirect");
+
+          service.registerClient(request, userAuth);
+        });
+
+    assertThat(exception.getMessage(),
+        containsString("Plain http redirect URIs are only allowed for loopback"));
+  }
+
+  @Test
+  void testRedirectUriContainingFragments() {
+    ConstraintViolationException exception =
+        Assertions.assertThrows(ConstraintViolationException.class, () -> {
+          RegisteredClientDTO request =
+              createClientDTO("https://example.com/callback#token=abc123");
+
+          service.registerClient(request, userAuth);
+        });
+
+    assertThat(exception.getMessage(), containsString("Invalid redirect URI: contains a fragment"));
+  }
+
+  @Test
+  void testValidRedirectUris() {
+    Assertions.assertDoesNotThrow(() -> {
+      RegisteredClientDTO request = createClientDTO("http://localhost/redirect");
 
       service.registerClient(request, userAuth);
     });
 
-    assertThat(exception.getMessage(), containsString("Invalid redirect URI"));
-
     Assertions.assertDoesNotThrow(() -> {
-      RegisteredClientDTO request = new RegisteredClientDTO();
-      request.setClientName("example");
-      request.setGrantTypes(Set.of(AuthorizationGrantType.CODE));
-      request.setRedirectUris(Set.of("myapp://redirect"));
+      RegisteredClientDTO request = createClientDTO("http://127.0.0.1:8080/redirect");
+
       service.registerClient(request, userAuth);
     });
 
     Assertions.assertDoesNotThrow(() -> {
-      RegisteredClientDTO request = new RegisteredClientDTO();
-      request.setClientName("example");
-      request.setGrantTypes(Set.of(AuthorizationGrantType.CODE));
-      request.setRedirectUris(Set.of("edu.kit.data.oidc-agent:/redirect"));
+      RegisteredClientDTO request = createClientDTO("http://[::1]:61023/oauth2redirect");
+
+      service.registerClient(request, userAuth);
+    });
+
+    Assertions.assertDoesNotThrow(() -> {
+      RegisteredClientDTO request =
+          createClientDTO("http://[0:0:0:0:0:0:0:1]:61023/oauth2redirect");
+
+      service.registerClient(request, userAuth);
+    });
+
+    Assertions.assertDoesNotThrow(() -> {
+      RegisteredClientDTO request = createClientDTO("edu.kit.data.oidc-agent:/redirect");
+
       service.registerClient(request, userAuth);
     });
   }
 
   @Test
   void testBlacklistedUriValidation() {
-
     lenient().when(blsService.isBlacklisted("https://deny.example/cb")).thenReturn(true);
 
     ConstraintViolationException exception =
@@ -281,12 +344,10 @@ class ClientRegistrationServiceTests {
         });
 
     assertThat(exception.getMessage(), containsString("https://deny.example/cb is not allowed"));
-
   }
 
   @Test
   void testAllowedGrantTypeChecks() throws ParseException {
-
     // ask exchange grant type as user
     InvalidClientRegistrationRequest exception =
         Assertions.assertThrows(InvalidClientRegistrationRequest.class, () -> {
@@ -389,12 +450,10 @@ class ClientRegistrationServiceTests {
     assertThat(response.getRegistrationAccessToken(), nullValue());
     assertThat(response.getClientSecret(), notNullValue());
     assertThat(response.getContacts(), hasItem(adminAccount.getUserInfo().getEmail()));
-
   }
 
   @Test
   void testRestrictedScopesAreFilteredOut() {
-
     scopeService.getRestricted().forEach(ss -> {
       final String restrictedScope = ss.getValue();
       RegisteredClientDTO request = new RegisteredClientDTO();
@@ -430,7 +489,6 @@ class ClientRegistrationServiceTests {
 
   @Test
   void testRestrictedScopesAreFilteredOutWithMatchers() throws ParseException {
-
     String restrictedScope1 = "storage.read:/whatever";
     String restrictedScope2 = "storage.read:/";
 
@@ -455,9 +513,7 @@ class ClientRegistrationServiceTests {
 
   @Test
   void testReservedScopesAreFilteredOut() {
-
-    scopeService.getReserved().forEach(ss -> {
-      final String reservedScope = ss.getValue();
+    IamSystemScopeService.RESERVED_VALUES.forEach(reservedScope -> {
       RegisteredClientDTO request = new RegisteredClientDTO();
       request.setClientName("example");
       request.setGrantTypes(Set.of(AuthorizationGrantType.CODE));
@@ -481,7 +537,6 @@ class ClientRegistrationServiceTests {
         fail("Unexpected JSON mapping problem");
       }
       assertThat(response.getScope(), not(hasItem(reservedScope)));
-
     });
   }
 
@@ -648,7 +703,6 @@ class ClientRegistrationServiceTests {
     } catch (ParseException e) {
       fail("Unexpected JSON mapping problem");
     }
-
   }
 
   @Test
@@ -753,7 +807,6 @@ class ClientRegistrationServiceTests {
 
   @Test
   void testAnonymousRequestYeldsRegistrationAccessToken() throws ParseException {
-
     RegisteredClientDTO request = new RegisteredClientDTO();
     request.setClientName("example");
     request.setGrantTypes(Set.of(AuthorizationGrantType.DEVICE_CODE));
@@ -771,7 +824,6 @@ class ClientRegistrationServiceTests {
 
   @Test
   void testSuccesfullRegistration() throws ParseException {
-
     RegisteredClientDTO request = new RegisteredClientDTO();
     request.setClientName("example");
     request.setGrantTypes(Set.of(AuthorizationGrantType.CLIENT_CREDENTIALS));
@@ -791,7 +843,6 @@ class ClientRegistrationServiceTests {
 
   @Test
   void noScopeYeldsDefaultScopes() throws ParseException {
-
     Set<String> defaultScopes = scopeService.toStrings(scopeService.getDefaults());
 
     RegisteredClientDTO request = new RegisteredClientDTO();
@@ -800,12 +851,10 @@ class ClientRegistrationServiceTests {
     RegisteredClientDTO response = service.registerClient(request, userAuth);
 
     defaultScopes.forEach(s -> assertThat(response.getScope(), hasItem(s)));
-
   }
 
   @Test
   void testRegisteredUserAuthzPolicy() {
-
     registrationProperties.setAllowFor(REGISTERED_USERS);
     RegisteredClientDTO request = new RegisteredClientDTO();
     request.setClientName("example");
@@ -823,12 +872,10 @@ class ClientRegistrationServiceTests {
       assertThat(userResponse.getClientId(), notNullValue());
       assertThat(adminResponse.getClientId(), notNullValue());
     });
-
   }
 
   @Test
   void testAdministratorsAuthzPolicy() {
-
     registrationProperties.setAllowFor(ADMINISTRATORS);
     RegisteredClientDTO request = new RegisteredClientDTO();
     request.setClientName("example");
@@ -850,12 +897,10 @@ class ClientRegistrationServiceTests {
       RegisteredClientDTO adminResponse = service.registerClient(request, adminAuth);
       assertThat(adminResponse.getClientId(), notNullValue());
     });
-
   }
 
   @Test
   void testAuthzComesBeforeLookupForRetrieveClient() {
-
     InvalidClientRegistrationRequest exception =
         Assertions.assertThrows(InvalidClientRegistrationRequest.class, () -> {
           service.retrieveClient("invalid-client-id", noAuth);
@@ -872,7 +917,6 @@ class ClientRegistrationServiceTests {
 
   @Test
   void testRegisterAndRetrieveWorksForUser() throws ParseException {
-
     RegisteredClientDTO request = new RegisteredClientDTO();
     request.setClientName("example");
     request.setGrantTypes(Set.of(AuthorizationGrantType.CLIENT_CREDENTIALS));
@@ -890,12 +934,10 @@ class ClientRegistrationServiceTests {
     assertThat(response.getContacts(), hasItem(testAccount.getUserInfo().getEmail()));
     assertThat(response.getRegistrationClientUri(),
         is("http://localhost:8080/iam/api/client-registration/" + response.getClientId()));
-
   }
 
   @Test
   void testRegisterAndRetrieveWorksForAnonymousUser() throws ParseException {
-
     RegisteredClientDTO request = new RegisteredClientDTO();
     request.setClientName("example");
     request.setGrantTypes(Set.of(AuthorizationGrantType.DEVICE_CODE));
@@ -916,12 +958,10 @@ class ClientRegistrationServiceTests {
     assertThat(response.getClientSecret(), notNullValue());
     assertThat(response.getRegistrationClientUri(),
         is("http://localhost:8080/iam/api/client-registration/" + response.getClientId()));
-
   }
 
   @Test
   void testRatClientIdAndScopesAreChecked() throws ParseException {
-
     RegisteredClientDTO request = new RegisteredClientDTO();
     request.setClientName("example");
     request.setGrantTypes(Set.of(AuthorizationGrantType.DEVICE_CODE));
@@ -951,7 +991,6 @@ class ClientRegistrationServiceTests {
 
   @Test
   void testSuccesfullDelete() throws ParseException {
-
     RegisteredClientDTO request = new RegisteredClientDTO();
     request.setClientName("example");
     request.setGrantTypes(Set.of(AuthorizationGrantType.CLIENT_CREDENTIALS));
@@ -971,7 +1010,6 @@ class ClientRegistrationServiceTests {
     });
 
     assertThat(notFoundException.getMessage(), containsString("Client not found"));
-
   }
 
   @Test
@@ -996,7 +1034,6 @@ class ClientRegistrationServiceTests {
 
   @Test
   void testGranTypesAreCheckedOnUpdate() throws ParseException {
-
     RegisteredClientDTO request = new RegisteredClientDTO();
     request.setClientName("example");
     request.setGrantTypes(Set.of(AuthorizationGrantType.CLIENT_CREDENTIALS));
@@ -1028,12 +1065,10 @@ class ClientRegistrationServiceTests {
 
     assertThat(updateResponse.getGrantTypes(),
         hasItems(AuthorizationGrantType.CLIENT_CREDENTIALS, AuthorizationGrantType.TOKEN_EXCHANGE));
-
   }
 
   @Test
   void testRedirectUrisAreCheckedOnUpdate() throws ParseException {
-
     RegisteredClientDTO request = new RegisteredClientDTO();
     request.setClientName("example");
     request.setGrantTypes(Set.of(AuthorizationGrantType.CODE));
@@ -1054,8 +1089,6 @@ class ClientRegistrationServiceTests {
 
   @Test
   void testRatIsUpdated() throws ParseException {
-
-    TestClock testClock = (TestClock) clock;
     ClientDefaultsProperties props = new ClientDefaultsProperties();
     props.setDefaultRegistrationAccessTokenValiditySeconds((int) TimeUnit.DAYS.toSeconds(1));
 
@@ -1076,7 +1109,7 @@ class ClientRegistrationServiceTests {
     RegisteredClientDTO updateRequest = response;
     response.setClientDescription("Whatever");
 
-    testClock.fastForward(Duration.ofDays(2));
+    clock.advance(Duration.ofDays(2));
 
     RegisteredClientDTO updateResponse =
         service.updateClient(response.getClientId(), updateRequest, ratAuth);
@@ -1084,12 +1117,10 @@ class ClientRegistrationServiceTests {
     assertThat(updateResponse.getRegistrationAccessToken(), notNullValue());
     assertThat(updateResponse.getRegistrationAccessToken(),
         not(equalTo(response.getRegistrationAccessToken())));
-
   }
 
   @Test
   void testPrivilegedGrantTypesArePreservedOnUpdate() throws ParseException {
-
     RegisteredClientDTO request = new RegisteredClientDTO();
     request.setClientName("example");
     request.setGrantTypes(Set.of(AuthorizationGrantType.CODE));
@@ -1121,7 +1152,6 @@ class ClientRegistrationServiceTests {
 
   @Test
   void testPrivilegedGrantTypesAreCheckedOnUpdateForAnonymousUser() throws ParseException {
-
     RegisteredClientDTO request = new RegisteredClientDTO();
     request.setClientName("example");
     request.setGrantTypes(Set.of(AuthorizationGrantType.CODE));
@@ -1147,7 +1177,6 @@ class ClientRegistrationServiceTests {
 
   @Test
   void testRestrictedScopesArePreserved() throws ParseException {
-
     RegisteredClientDTO request = new RegisteredClientDTO();
     request.setClientName("restricted-scopes-preserved");
     request.setGrantTypes(Set.of(AuthorizationGrantType.CODE));
@@ -1175,8 +1204,6 @@ class ClientRegistrationServiceTests {
 
   @Test
   void testRedeemClient() throws ParseException {
-
-    TestClock testClock = (TestClock) clock;
     ClientDefaultsProperties props = new ClientDefaultsProperties();
     props.setDefaultRegistrationAccessTokenValiditySeconds((int) TimeUnit.DAYS.toSeconds(1));
 
@@ -1218,7 +1245,7 @@ class ClientRegistrationServiceTests {
 
     assertThat(redeemedResponse.getClientId(), is(response.getClientId()));
 
-    testClock.fastForward(Duration.ofDays(2));
+    clock.advance(Duration.ofDays(2));
 
     Assertions.assertThrows(InvalidClientRegistrationRequest.class, () -> {
       service.redeemClient(response.getClientId(), response.getRegistrationAccessToken(),
@@ -1230,7 +1257,6 @@ class ClientRegistrationServiceTests {
 
   @Test
   void testClientWithJwkValue() throws ParseException {
-
     final String NOT_A_JSON_STRING = "This is not a JSON string";
     final String VALID_JSON_VALUE =
         "{\"keys\":[{\"kty\":\"RSA\",\"e\":\"AQAB\",\"use\":\"sig\",\"kid\":\"rsa1\",\"alg\":\"RS256\",\"n\":\"zTF0oJjUDvoEBK82Hb706nRRJakcqoz_w4zdCIiv0BR1oumtQE8teUoLaYK_aqf9y30wajXoIq40tJYMXKW7QIFm2GYZ3qknUKGIy8xdNFEnLA2DG-BwSisNpJTvmiG1nbjvDRk7_M7WRmNwQkpdAXri89e9lL7ctG9aOnUs6wpinCqXYX9xvJl9k1HOdj_qZKrpz6xe75bPabe2yrF2TRfSobI5SSqTBBFLg06kuaaqqzVWbzCv8hgV7NMrt1CYDlXrfS2v1Ejf3WIEtgMRSxDBav90kpkBybwFhvyy7E87hjMdyoNk-yyYuZA_uSJCPKWJwjPB_EXaw280rObZ5Q\"}]}";
@@ -1260,7 +1286,6 @@ class ClientRegistrationServiceTests {
 
   @Test
   void testClientWithJwksUri() throws ParseException {
-
     final String NOT_A_VALID_URI = "This is not a valid URI";
     final String VALID_URI = "https://host.domain.com/this/is/my/public-key";
 
@@ -1289,5 +1314,4 @@ class ClientRegistrationServiceTests {
       service.deleteClient(savedClient.getClientId(), userAuth);
     }
   }
-
 }

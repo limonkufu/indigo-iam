@@ -27,7 +27,6 @@ import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.Test;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.boot.test.autoconfigure.web.servlet.AutoConfigureMockMvc;
-import org.springframework.boot.test.autoconfigure.web.servlet.MockMvcPrint;
 import org.springframework.boot.test.context.SpringBootTest;
 import org.springframework.security.test.context.support.WithMockUser;
 import org.springframework.test.web.servlet.MockMvc;
@@ -43,7 +42,7 @@ import it.infn.mw.iam.test.util.WithMockOAuthUser;
 import it.infn.mw.iam.test.util.oauth.MockOAuth2Filter;
 
 @SpringBootTest(classes = {IamLoginService.class, CoreControllerTestSupport.class})
-@AutoConfigureMockMvc(printOnlyOnFailure = true, print = MockMvcPrint.LOG_DEBUG)
+@AutoConfigureMockMvc
 class SearchClientControllerTests {
 
   @Autowired
@@ -64,15 +63,20 @@ class SearchClientControllerTests {
   @WithMockOAuthUser(user = "admin", authorities = {"ROLE_ADMIN"}, scopes = "iam:admin.read")
   void searchForPublicClientByName() throws Exception {
 
-    ListResponseDTO<RegisteredClientDTO> response = mapper.readValue(
-        mvc.perform(get(ENDPOINT).param("search", "Public client").param("searchType", "name"))
-          .andExpect(status().isOk())
-          .andReturn()
-          .getResponse()
-          .getContentAsString(),
-        new TypeReference<ListResponseDTO<RegisteredClientDTO>>() {});
+    ListResponseDTO<RegisteredClientDTO> response =
+        mapper
+          .readValue(
+              mvc
+                .perform(
+                    get(ENDPOINT).param("search", "Protected Resource").param("searchType", "name"))
+                .andExpect(status().isOk())
+                .andReturn()
+                .getResponse()
+                .getContentAsString(),
+              new TypeReference<ListResponseDTO<RegisteredClientDTO>>() {});
     assertEquals(1, response.getTotalResults());
-    assertEquals("Public client", response.getResources().get(0).getClientName());
+    assertEquals("Protected Resource allowed only to introspect",
+        response.getResources().get(0).getClientName());
   }
 
   @Test
